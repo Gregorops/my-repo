@@ -26,19 +26,17 @@ jobs:
           GOOS=linux GOARCH=amd64 go build -o build/goapp main.go
           ls -lh build/
 
-      - name: Setup SSH key and known_hosts
+      - name: Setup SSH
         run: |
-          set -e
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
+           set -ex  # Показывает команды и останавливает при ошибке
+           mkdir -p ~/.ssh
+           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+           echo "✅ Ключ записан"
+           chmod 600 ~/.ssh/id_ed25519
+           echo "✅ Права установлены"
+           ssh-keyscan -p 5692 -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
+           echo "✅ Хост добавлен"
 
-          # Проверим что ключ записался корректно
-          echo "🔐 Проверка SSH-ключа:"
-          head -n 2 ~/.ssh/id_ed25519 || echo "⚠️ Ключ не прочитан"
-
-          # Добавим fingerprint сервера в known_hosts
-          ssh-keyscan -p 5692 -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Deploy to Production
         run: |
