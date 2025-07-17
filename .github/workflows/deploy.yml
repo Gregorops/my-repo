@@ -37,53 +37,20 @@ jobs:
               exit 1
           }
 
-      - name: Find SSH executables
+      - name: Setup SSH environment
         run: |
-          # Проверяем все возможные пути к SSH
-          $possiblePaths = @(
-              "$env:ProgramFiles\OpenSSH\ssh.exe",
-              "$env:SystemRoot\System32\OpenSSH\ssh.exe",
-              "C:\Windows\System32\OpenSSH\ssh.exe"
-          )
-          
-          $foundSsh = $null
-          foreach ($path in $possiblePaths) {
-              if (Test-Path $path) {
-                  $foundSsh = $path
-                  break
-              }
-          }
-          
-          if (-not $foundSsh) {
-              Write-Output "::error::SSH client not found in any standard location"
-              exit 1
-          }
-          
-          # Добавляем путь в переменную окружения
-          $sshDir = Split-Path $foundSsh -Parent
-          $env:Path += ";$sshDir"
-          
-          Write-Output "✅ Found SSH at $foundSsh"
-          Write-Output "PATH updated: $env:Path"
-          
-          # Сохраняем путь для последующих шагов
-          echo "SSH_PATH=$foundSsh" >> $env:GITHUB_ENV
-          echo "SSH_DIR=$sshDir" >> $env:GITHUB_ENV
-
-      - name: Setup SSH key
-        run: |
-          # Создаем .ssh директорию
+          # Create .ssh directory if not exists
           if (-not (Test-Path "$env:USERPROFILE\.ssh")) {
-              New-Item -ItemType Directory "$env:USERPROFILE\.ssh" | Out-Null
+              New-Item -ItemType Directory "$env:USERPROFILE\.ssh" -Force | Out-Null
           }
           
-          # Сохраняем ключ
-          $env:SSH_PRIVATE_KEY | Out-File "$env:USERPROFILE\.ssh\id_ed25519" -Encoding ASCII
+          # Save SSH key with proper formatting
+          $env:SSH_PRIVATE_KEY | Out-File "$env:USERPROFILE\.ssh\id_ed25519" -Encoding ASCII -NoNewline
           
-          # Фиксим переносы строк
-          (Get-Content "$env:USERPROFILE\.ssh\id_ed25519") -replace "`r`n","`n" | Set-Content "$env:USERPROFILE\.ssh\id_ed25519"
+          # Fix line endings if needed
+          (Get-Content "$env:USERPROFILE\.ssh\id_ed25519") -replace "`r`n","`n" | Set-Content "$env:USERPROFILE\.ssh\id_ed25519" -NoNewline
           
-          # Устанавливаем права
+          # Set strict permissions
           icacls "$env:USERPROFILE\.ssh\id_ed25519" /inheritance:r /grant:r "$env:USERNAME`:R"
           
           Write-Output "✅ SSH key configured"
@@ -92,43 +59,91 @@ jobs:
 
       - name: Test SSH connection
         run: |
-          # Используем найденный путь к SSH
-          & "$env:SSH_PATH" -T -p 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" `
-            -o StrictHostKeyChecking=no `
-            -o ConnectTimeout=10 `
-            $env:PROD_USER@$env:PROD_HOST "echo 'SSH test successful'"
+          # Verify SSH client exists
+          if (-not (Test-Path $env:SSH_PATH)) {
+              Write-Output "::error::SSH executable not found at $env:SSH_PATH"
+              exit 1
+          }
           
-          if (-not $?) {
-              Write-Output "::error::SSH connection failed"
+          # Prepare the SSH command as a single line
+          $sshCommand = "& `"$env:SSH_PATH`" -T -p 5692 -i `"$env:USERPROFILE\.ssh\id_ed25519`" " +
+                        "-o StrictHostKeyChecking=no " +
+                        "-o ConnectTimeout=10 " +
+                        "`"$env:PROD_USER@$env:PROD_HOST`" " +
+                        "`"echo 'SSH test successful'`""
+          
+          Write-Output "Executing SSH test command..."
+          Write-Output $sshCommand
+          
+          try {
+              Invoke-Expression $sshCommand
+              if ($LASTEXITCODE -ne 0) {
+                  throw "SSH connection failed with exit code $LASTEXITCODE"
+              }
+              Write-Output "✅ SSH connection successful"
+          } catch {
+              Write-Output "::error::❌ SSH connection failed: $_"
               exit 1
           }
         env:
+          SSH_PATH: C:\Windows\System32\OpenSSH\ssh.exe
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
 
       - name: Deploy to Production
         run: |
-          # Используем SCP из той же директории
           $scpPath = Join-Path $env:SSH_DIR "scp.exe"
           
-          & $scpPath -P 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" `
-            -o StrictHostKeyChecking=no `
-            build/app $env:PROD_USER@$env:PROD_HOST:"/home/$env:PROD_USER/app"
+          if (-not (Test-Path $scpPath)) {
+              Write-Output "::error::SCP executable not found at $scpPath"
+              exit 1
+          }
           
-          if (-not $?) {
-              Write-Output "::error::Deployment failed"
+          $scpCommand = "& `"$scpPath`" -v -P 5692 -i `"$env:USERPROFILE\.ssh\id_ed25519`" " +
+                        "-o StrictHostKeyChecking=no " +
+                        "`"build/app`" " +
+                        "`"$env:PROD_USER@$env:PROD_HOST:/home/$env:PROD_USER/app`""
+          
+          Write-Output "Executing deployment command..."
+          Write-Output $scpCommand
+          
+          try {
+              Invoke-Expression $scpCommand
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Deployment failed with exit code $LASTEXITCODE"
+              }
+              Write-Output "✅ Deployment successful"
+          } catch {
+              Write-Output "::error::❌ Deployment failed: $_"
               exit 1
           }
         env:
+          SSH_DIR: C:\Windows\System32\OpenSSH
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
 
       - name: Start Application
         run: |
-          & "$env:SSH_PATH" -p 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" `
-            -o StrictHostKeyChecking=no `
-            $env:PROD_USER@$env:PROD_HOST `
-            "chmod +x /home/$env:PROD_USER/app && nohup /home/$env:PROD_USER/app > /home/$env:PROD_USER/app.log 2>&1 &"
+          $startCommand = "& `"$env:SSH_PATH`" -p 5692 -i `"$env:USERPROFILE\.ssh\id_ed25519`" " +
+                         "-o StrictHostKeyChecking=no " +
+                         "`"$env:PROD_USER@$env:PROD_HOST`" " +
+                         "`"chmod +x /home/$env:PROD_USER/app && " +
+                         "nohup /home/$env:PROD_USER/app > /home/$env:PROD_USER/app.log 2>&1 &`""
+          
+          Write-Output "Executing start command..."
+          Write-Output $startCommand
+          
+          try {
+              Invoke-Expression $startCommand
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Application start failed with exit code $LASTEXITCODE"
+              }
+              Write-Output "✅ Application started successfully"
+          } catch {
+              Write-Output "::error::❌ Failed to start application: $_"
+              exit 1
+          }
         env:
+          SSH_PATH: C:\Windows\System32\OpenSSH\ssh.exe
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
