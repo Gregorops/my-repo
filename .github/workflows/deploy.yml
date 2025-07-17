@@ -68,7 +68,7 @@ jobs:
       # Шаг 5: Проверка подключения
       - name: Test SSH connection
         run: |
-          $sshPath = "$env:ProgramFiles\OpenSSH\ssh.exe"
+          $sshPath = "$env:Windows\System32\OpenSSH\ssh.exe"
           if (-not (Test-Path $sshPath)) {
               Write-Output "::error::❌ SSH client not found at $sshPath"
               exit 1
