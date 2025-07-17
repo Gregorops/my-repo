@@ -115,7 +115,7 @@ jobs:
       # Шаг 7: Запуск приложения
       - name: Start Application
         run: |
-          $sshPath = "$env:ProgramFiles\OpenSSH\ssh.exe"
+          $sshPath = "$env:Windows\System32\OpenSSH"
           $remoteCommands = @"
           #!/bin/bash
           echo "=== Environment ==="
