@@ -23,12 +23,13 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p 5692 -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
 
-      # ⬇️ ВРЕМЕННО: проверка, что секреты заданы (удалишь потом)
-      - name: Debug secrets (TEMP)
+      - name: Setup SSH
         run: |
-          echo "🔧 PROD_USER: ${{ secrets.PROD_USER }}"
-          echo "🔧 PROD_HOST: ${{ secrets.PROD_HOST }}"
-          echo "🔧 PRIVATE KEY LEN: $(echo '${{ secrets.SSH_PRIVATE_KEY }}' | wc -c)"
+          set -x  # Показ команд
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519 || echo "Ошибка записи ключа"
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p 5692 -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts || echo "Ошибка keyscan"
 
  
       - name: Deploy and Run on Production
