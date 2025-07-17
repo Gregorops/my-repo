@@ -8,7 +8,7 @@ jobs:
     runs-on: self-hosted
     defaults:
       run:
-        shell: cmd  # Используем cmd вместо bash для Windows
+        shell: cmd
         working-directory: ${{ github.workspace }}
 
     steps:
@@ -25,6 +25,7 @@ jobs:
 
       - name: Build Go binary
         run: |
+          @echo off
           if not exist main.go (
             echo ❌ Файл main.go не найден!
             exit /b 1
@@ -36,28 +37,38 @@ jobs:
           
       - name: Setup SSH
         run: |
-          set -ex
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          # Для Windows можно добавить явное преобразование формата строки
-          sed -i 's/\r$//' ~/.ssh/id_ed25519
+          @echo off
+          mkdir "%USERPROFILE%\.ssh"
+          echo %SSH_PRIVATE_KEY% > "%USERPROFILE%\.ssh\id_ed25519"
+          echo ✅ Ключ записан
+          icacls "%USERPROFILE%\.ssh\id_ed25519" /inheritance:r /grant:r "%USERNAME%":R
+          echo ✅ Права установлены
+          
+          :: Удаление CRLF из ключа (аналог sed -i)
+          powershell -Command "(Get-Content '%USERPROFILE%\.ssh\id_ed25519') -replace \"`r`n\", \"`n\" | Set-Content '%USERPROFILE%\.ssh\id_ed25519' -NoNewline"
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - name: Deploy to Production
         run: |
-          echo "🚀 Копируем Go-приложение на прод..."
-          scp -P 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
-            build/goapp ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }}:~/goapp
+          @echo off
+          echo 🚀 Копируем Go-приложение на прод...
+          scp -P 5692 -i "%USERPROFILE%\.ssh\id_ed25519" -o StrictHostKeyChecking=no build\goapp %PROD_USER%@%PROD_HOST%:~/goapp
+        env:
+          PROD_USER: ${{ secrets.PROD_USER }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
 
       - name: Start Application on Production
         run: |
-          echo "⚙️ Перезапуск Go-приложения..."
-          ssh -p 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
-            ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }} << 'EOF'
-            #!/bin/bash
-            pkill goapp || true
+          @echo off
+          echo ⚙️ Перезапуск Go-приложения...
+          ssh -p 5692 -i "%USERPROFILE%\.ssh\id_ed25519" -o StrictHostKeyChecking=no %PROD_USER%@%PROD_HOST% "
+            taskkill /f /im goapp.exe || true
             chmod +x ~/goapp
-            nohup ~/goapp > ~/goapp.log 2>&1 &
-            sleep 2
-            pgrep goapp && echo "✅ Приложение запущено (PID: $(pgrep goapp))" || echo "❌ Не удалось запустить приложение"
-          EOF
+            start /b goapp > goapp.log 2>&1
+            timeout /t 2 >nul
+            tasklist | findstr goapp && echo ✅ Приложение запущено || echo ❌ Не удалось запустить приложение
+          "
+        env:
+          PROD_USER: ${{ secrets.PROD_USER }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
