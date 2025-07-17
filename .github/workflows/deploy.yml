@@ -38,7 +38,7 @@ jobs:
       - name: Deploy to Production
         run: |
           echo "🚀 Копируем Go-приложение на прод..."
-          scp -P 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no build/goapp ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }}:/home/${{ secrets.PROD_USER }}/goapp
+          scp -P 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no build/goapp "${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }}:/home/${{ secrets.PROD_USER }}/goapp"
 
       - name: Start Application on Production
         run: |
