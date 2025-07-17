@@ -12,79 +12,128 @@ jobs:
         working-directory: ${{ github.workspace }}
 
     steps:
+      # Шаг 1: Получение кода
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Шаг 2: Настройка Go
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
           cache: true
 
+      # Шаг 3: Сборка приложения
       - name: Build Go binary
         run: |
-          # Check if main.go exists
+          # Проверка наличия main.go
           if (-not (Test-Path main.go)) {
-              Write-Output "Error: main.go not found"
+              Write-Output "::error::❌ main.go not found in $pwd"
+              Get-ChildItem | Format-Table | Out-String | Write-Output
               exit 1
           }
 
-          # Build application
+          # Сборка бинарника
           $env:GOOS = "linux"
           $env:GOARCH = "amd64"
-          go build -o build/app main.go
+          go build -ldflags="-s -w" -o build/app main.go
 
-          # Verify binary was created
+          # Проверка результата сборки
           if (-not (Test-Path build/app)) {
-              Write-Output "Error: Binary not created"
+              Write-Output "::error::❌ Build failed - binary not created"
               exit 1
           }
-          Write-Output "Build successful"
-          Get-ChildItem build
 
+          Write-Output "✅ Build successful. Binary size: $((Get-Item build/app).Length/1MB) MB"
+
+      # Шаг 4: Настройка SSH
       - name: Setup SSH
         run: |
-          # Create .ssh directory if not exists
+          # Создание .ssh директории
           if (-not (Test-Path "$env:USERPROFILE\.ssh")) {
-              New-Item -ItemType Directory -Path "$env:USERPROFILE\.ssh" -Force | Out-Null
+              New-Item -ItemType Directory -Path "$env:USERPROFILE\.ssh" | Out-Null
           }
 
-          # Save SSH key
-          $env:SSH_PRIVATE_KEY | Out-File -FilePath "$env:USERPROFILE\.ssh\id_ed25519" -Encoding ASCII -NoNewline
+          # Сохранение SSH ключа
+          $keyPath = "$env:USERPROFILE\.ssh\id_ed25519"
+          [System.IO.File]::WriteAllText($keyPath, $env:SSH_PRIVATE_KEY.Replace("`r`n","`n"), [System.Text.Encoding]::ASCII)
 
-          # Set permissions
-          icacls "$env:USERPROFILE\.ssh\id_ed25519" /inheritance:r /grant:r "$env:USERNAME`:R"
-          Write-Output "SSH setup complete"
+          # Установка прав
+          icacls $keyPath /inheritance:r /grant:r "$env:USERNAME`:R"
+
+          Write-Output "✅ SSH key configured at $keyPath"
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Deploy to Production
+      # Шаг 5: Проверка подключения
+      - name: Test SSH connection
         run: |
-          # Verify binary exists
-          if (-not (Test-Path build/app)) {
-              Write-Output "Error: Binary not found"
+          $sshPath = "$env:ProgramFiles\OpenSSH\ssh.exe"
+          if (-not (Test-Path $sshPath)) {
+              Write-Output "::error::❌ SSH client not found at $sshPath"
               exit 1
           }
 
-          # Deploy using SCP
-          scp -P 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" -o StrictHostKeyChecking=no build/app ${env:PROD_USER}@${env:PROD_HOST}:/home/${env:PROD_USER}/app
-          Write-Output "Deployment successful"
+          & $sshPath -T -p 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" `
+            -o StrictHostKeyChecking=no `
+            -o ConnectTimeout=10 `
+            -o LogLevel=ERROR `
+            $env:PROD_USER@$env:PROD_HOST "echo 'SSH connection successful'"
+          
+          if (-not $?) {
+              Write-Output "::error::❌ SSH connection failed"
+              exit 1
+          }
         env:
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
 
-      - name: Start Application on Production
+      # Шаг 6: Деплой на сервер
+      - name: Deploy to Production
         run: |
-          # Start application on remote server
-          $commands = @"
-          pgrep -f app | xargs kill -9 || true
-          chmod +x /home/${env:PROD_USER}/app
-          nohup /home/${env:PROD_USER}/app > /home/${env:PROD_USER}/app.log 2>&1 &
+          $scpPath = "$env:ProgramFiles\OpenSSH\scp.exe"
+          $source = "build/app"
+          $destination = "$env:PROD_USER@$env:PROD_HOST:/home/$env:PROD_USER/app"
+
+          Write-Output "🚀 Deploying $source to $destination"
+
+          & $scpPath -v -P 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" `
+            -o StrictHostKeyChecking=no `
+            -o ConnectTimeout=30 `
+            $source $destination
+
+          if (-not $?) {
+              Write-Output "::error::❌ Deployment failed"
+              exit 1
+          }
+
+          Write-Output "✅ Deployment successful"
+        env:
+          PROD_USER: ${{ secrets.PROD_USER }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+
+      # Шаг 7: Запуск приложения
+      - name: Start Application
+        run: |
+          $sshPath = "$env:ProgramFiles\OpenSSH\ssh.exe"
+          $remoteCommands = @"
+          #!/bin/bash
+          echo "=== Environment ==="
+          printenv
+          echo "=== Disk Space ==="
+          df -h
+          echo "=== Starting Application ==="
+          pgrep -f app && kill $(pgrep -f app) || echo "No running process found"
+          chmod +x ~/app
+          nohup ~/app > ~/app.log 2>&1 &
           sleep 2
-          pgrep -f app && echo "Application started (PID: $(pgrep -f app))" || echo "Failed to start application"
+          pgrep -f app || { echo "::error::❌ Failed to start application"; cat ~/app.log; exit 1; }
+          echo "✅ Application started (PID: $(pgrep -f app))"
           "@
 
-          ssh -p 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" -o StrictHostKeyChecking=no ${env:PROD_USER}@${env:PROD_HOST} "$commands"
+          & $sshPath -p 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" `
+            -o StrictHostKeyChecking=no `
+            $env:PROD_USER@$env:PROD_HOST "$remoteCommands"
         env:
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
