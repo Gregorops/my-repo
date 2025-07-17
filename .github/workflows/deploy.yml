@@ -5,10 +5,10 @@ on:
 
 jobs:
   build-and-deploy:
-    runs-on: self-hosted
+    runs-on: self-hosted  # Windows runner
     defaults:
       run:
-        shell: cmd
+        shell: powershell  # Используем PowerShell для лучшей обработки
         working-directory: ${{ github.workspace }}
 
     steps:
@@ -22,46 +22,46 @@ jobs:
 
       - name: Build Go binary
         run: |
-          @echo off
-          if not exist main.go (
-            echo ❌ Файл main.go не найден!
-            exit /b 1
-          )
-          set GOOS=linux
-          set GOARCH=amd64
-          go build -o build\app.exe main.go
-          dir build
+          if (-not (Test-Path main.go)) {
+            Write-Output "❌ Файл main.go не найден!"
+            exit 1
+          }
+          $env:GOOS = "linux"
+          $env:GOARCH = "amd64"
+          go build -o build/app main.go
+          Get-ChildItem build
 
       - name: Setup SSH
         run: |
-          @echo off
-          mkdir "%USERPROFILE%\.ssh" 2>nul
-          echo %SSH_PRIVATE_KEY% > "%USERPROFILE%\.ssh\id_ed25519"
-          echo ✅ SSH key created
-          :: Fix line endings
-          powershell -Command "(Get-Content '%USERPROFILE%\.ssh\id_ed25519') -replace \"`r`n\", \"`n\" | Set-Content '%USERPROFILE%\.ssh\id_ed25519' -NoNewline"
-          :: Set permissions
-          icacls "%USERPROFILE%\.ssh\id_ed25519" /inheritance:r /grant:r "%USERNAME%":R
+          New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.ssh"
+          $env:SSH_PRIVATE_KEY | Out-File -FilePath "$env:USERPROFILE\.ssh\id_ed25519" -Encoding ASCII
+          Write-Output "✅ SSH key created"
+          # Fix line endings
+          (Get-Content "$env:USERPROFILE\.ssh\id_ed25519") -replace "`r`n","`n" | Set-Content "$env:USERPROFILE\.ssh\id_ed25519" -NoNewline
+          # Set permissions
+          icacls "$env:USERPROFILE\.ssh\id_ed25519" /inheritance:r /grant:r "$env:USERNAME`:R"
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - name: Deploy to Production
         run: |
-          @echo off
-          echo 🚀 Deploying to production...
-          scp -P 5692 -i "%USERPROFILE%\.ssh\id_ed25519" -o StrictHostKeyChecking=no build\app.exe %PROD_USER%@%PROD_HOST%:~/app.exe
+          Write-Output "🚀 Deploying to production..."
+          scp -P 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" -o StrictHostKeyChecking=no build/app ${env:PROD_USER}@${env:PROD_HOST}:/home/${env:PROD_USER}/app
         env:
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
 
       - name: Start Application on Production
         run: |
-          @echo off
-          echo ⚙️ Restarting application...
-          ssh -p 5692 -i "%USERPROFILE%\.ssh\id_ed25519" -o StrictHostKeyChecking=no %PROD_USER%@%PROD_HOST% ^
-          "rm -f ~/app.log & ^
-          ./app.exe > app.log 2>&1 & ^
-          echo ✅ Application started"
+          Write-Output "⚙️ Restarting application..."
+          $commands = @"
+            pgrep -f app | xargs kill -9 || true
+            chmod +x /home/${env:PROD_USER}/app
+            nohup /home/${env:PROD_USER}/app > /home/${env:PROD_USER}/app.log 2>&1 &
+            sleep 2
+            pgrep -f app && echo "✅ Application started (PID: $(pgrep -f app))" || echo "❌ Failed to start application"
+          "@
+          ssh -p 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" -o StrictHostKeyChecking=no ${env:PROD_USER}@${env:PROD_HOST} "$commands"
         env:
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
