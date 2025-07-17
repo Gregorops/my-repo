@@ -15,9 +15,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Create build directory
-        run: mkdir build
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -32,28 +29,27 @@ jobs:
           )
           set GOOS=linux
           set GOARCH=amd64
-          go build -o build\goapp main.go
+          go build -o build\app.exe main.go
           dir build
-          
+
       - name: Setup SSH
         run: |
           @echo off
-          mkdir "%USERPROFILE%\.ssh"
+          mkdir "%USERPROFILE%\.ssh" 2>nul
           echo %SSH_PRIVATE_KEY% > "%USERPROFILE%\.ssh\id_ed25519"
-          echo ✅ Ключ записан
-          icacls "%USERPROFILE%\.ssh\id_ed25519" /inheritance:r /grant:r "%USERNAME%":R
-          echo ✅ Права установлены
-          
-          :: Удаление CRLF из ключа (аналог sed -i)
+          echo ✅ SSH key created
+          :: Fix line endings
           powershell -Command "(Get-Content '%USERPROFILE%\.ssh\id_ed25519') -replace \"`r`n\", \"`n\" | Set-Content '%USERPROFILE%\.ssh\id_ed25519' -NoNewline"
+          :: Set permissions
+          icacls "%USERPROFILE%\.ssh\id_ed25519" /inheritance:r /grant:r "%USERNAME%":R
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - name: Deploy to Production
         run: |
           @echo off
-          echo 🚀 Копируем Go-приложение на прод...
-          scp -P 5692 -i "%USERPROFILE%\.ssh\id_ed25519" -o StrictHostKeyChecking=no build\goapp %PROD_USER%@%PROD_HOST%:~/goapp
+          echo 🚀 Deploying to production...
+          scp -P 5692 -i "%USERPROFILE%\.ssh\id_ed25519" -o StrictHostKeyChecking=no build\app.exe %PROD_USER%@%PROD_HOST%:~/app.exe
         env:
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
@@ -61,14 +57,11 @@ jobs:
       - name: Start Application on Production
         run: |
           @echo off
-          echo ⚙️ Перезапуск Go-приложения...
-          ssh -p 5692 -i "%USERPROFILE%\.ssh\id_ed25519" -o StrictHostKeyChecking=no %PROD_USER%@%PROD_HOST% "
-            taskkill /f /im goapp.exe || true
-            chmod +x ~/goapp
-            start /b goapp > goapp.log 2>&1
-            timeout /t 2 >nul
-            tasklist | findstr goapp && echo ✅ Приложение запущено || echo ❌ Не удалось запустить приложение
-          "
+          echo ⚙️ Restarting application...
+          ssh -p 5692 -i "%USERPROFILE%\.ssh\id_ed25519" -o StrictHostKeyChecking=no %PROD_USER%@%PROD_HOST% ^
+          "rm -f ~/app.log & ^
+          ./app.exe > app.log 2>&1 & ^
+          echo ✅ Application started"
         env:
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
