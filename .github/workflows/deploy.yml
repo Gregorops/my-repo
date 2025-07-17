@@ -1,7 +1,7 @@
 name: Deploy Go App to Production
 
 on:
-  workflow_dispatch:  # Только по кнопке
+  workflow_dispatch:  # Запуск вручную по кнопке
 
 jobs:
   build-and-deploy:
@@ -14,33 +14,43 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'  # Укажи нужную тебе версию
+          go-version: '1.22'  # Укажи свою версию Go, если нужна другая
 
       - name: Build Go binary
         run: |
           mkdir -p build
           if [ ! -f main.go ]; then
-            echo "Файл main.go не найден!"
+            echo "❌ Файл main.go не найден!"
             exit 1
           fi
           GOOS=linux GOARCH=amd64 go build -o build/goapp main.go
-          ls -l build/
+          ls -lh build/
 
-      - name: Setup SSH
+      - name: Setup SSH key and known_hosts
         run: |
           set -e
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
+
+          # Проверим что ключ записался корректно
+          echo "🔐 Проверка SSH-ключа:"
+          head -n 2 ~/.ssh/id_ed25519 || echo "⚠️ Ключ не прочитан"
+
+          # Добавим fingerprint сервера в known_hosts
           ssh-keyscan -p 5692 -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Deploy and Run on Production
+      - name: Deploy to Production
         run: |
+          echo "🚀 Копируем Go-приложение на прод..."
           scp -P 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no build/goapp ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }}:/home/${{ secrets.PROD_USER }}/goapp
 
+      - name: Start Application on Production
+        run: |
+          echo "⚙️ Перезапуск Go-приложения..."
           ssh -p 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }} "
             pkill goapp || true
             chmod +x ~/goapp
-            nohup ~/goapp > goapp.log 2>&1 &
+            nohup ~/goapp > ~/goapp.log 2>&1 &
+            echo '✅ Приложение запущено'
           "
-
