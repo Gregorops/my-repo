@@ -12,128 +12,123 @@ jobs:
         working-directory: ${{ github.workspace }}
 
     steps:
-      # Шаг 1: Получение кода
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Шаг 2: Настройка Go
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
           cache: true
 
-      # Шаг 3: Сборка приложения
       - name: Build Go binary
         run: |
-          # Проверка наличия main.go
           if (-not (Test-Path main.go)) {
-              Write-Output "::error::❌ main.go not found in $pwd"
-              Get-ChildItem | Format-Table | Out-String | Write-Output
+              Write-Output "::error::main.go not found"
               exit 1
           }
-
-          # Сборка бинарника
+          
           $env:GOOS = "linux"
           $env:GOARCH = "amd64"
-          go build -ldflags="-s -w" -o build/app main.go
-
-          # Проверка результата сборки
+          go build -o build/app main.go
+          
           if (-not (Test-Path build/app)) {
-              Write-Output "::error::❌ Build failed - binary not created"
+              Write-Output "::error::Binary not created"
               exit 1
           }
 
-          Write-Output "✅ Build successful. Binary size: $((Get-Item build/app).Length/1MB) MB"
-
-      # Шаг 4: Настройка SSH
-      - name: Setup SSH
+      - name: Find SSH executables
         run: |
-          # Создание .ssh директории
-          if (-not (Test-Path "$env:USERPROFILE\.ssh")) {
-              New-Item -ItemType Directory -Path "$env:USERPROFILE\.ssh" | Out-Null
+          # Проверяем все возможные пути к SSH
+          $possiblePaths = @(
+              "$env:ProgramFiles\OpenSSH\ssh.exe",
+              "$env:SystemRoot\System32\OpenSSH\ssh.exe",
+              "C:\Windows\System32\OpenSSH\ssh.exe"
+          )
+          
+          $foundSsh = $null
+          foreach ($path in $possiblePaths) {
+              if (Test-Path $path) {
+                  $foundSsh = $path
+                  break
+              }
           }
+          
+          if (-not $foundSsh) {
+              Write-Output "::error::SSH client not found in any standard location"
+              exit 1
+          }
+          
+          # Добавляем путь в переменную окружения
+          $sshDir = Split-Path $foundSsh -Parent
+          $env:Path += ";$sshDir"
+          
+          Write-Output "✅ Found SSH at $foundSsh"
+          Write-Output "PATH updated: $env:Path"
+          
+          # Сохраняем путь для последующих шагов
+          echo "SSH_PATH=$foundSsh" >> $env:GITHUB_ENV
+          echo "SSH_DIR=$sshDir" >> $env:GITHUB_ENV
 
-          # Сохранение SSH ключа
-          $keyPath = "$env:USERPROFILE\.ssh\id_ed25519"
-          [System.IO.File]::WriteAllText($keyPath, $env:SSH_PRIVATE_KEY.Replace("`r`n","`n"), [System.Text.Encoding]::ASCII)
-
-          # Установка прав
-          icacls $keyPath /inheritance:r /grant:r "$env:USERNAME`:R"
-
-          Write-Output "✅ SSH key configured at $keyPath"
+      - name: Setup SSH key
+        run: |
+          # Создаем .ssh директорию
+          if (-not (Test-Path "$env:USERPROFILE\.ssh")) {
+              New-Item -ItemType Directory "$env:USERPROFILE\.ssh" | Out-Null
+          }
+          
+          # Сохраняем ключ
+          $env:SSH_PRIVATE_KEY | Out-File "$env:USERPROFILE\.ssh\id_ed25519" -Encoding ASCII
+          
+          # Фиксим переносы строк
+          (Get-Content "$env:USERPROFILE\.ssh\id_ed25519") -replace "`r`n","`n" | Set-Content "$env:USERPROFILE\.ssh\id_ed25519"
+          
+          # Устанавливаем права
+          icacls "$env:USERPROFILE\.ssh\id_ed25519" /inheritance:r /grant:r "$env:USERNAME`:R"
+          
+          Write-Output "✅ SSH key configured"
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      # Шаг 5: Проверка подключения
       - name: Test SSH connection
         run: |
-          $sshPath = "$env:Windows\System32\OpenSSH\ssh.exe"
-          if (-not (Test-Path $sshPath)) {
-              Write-Output "::error::❌ SSH client not found at $sshPath"
-              exit 1
-          }
-
-          & $sshPath -T -p 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" `
+          # Используем найденный путь к SSH
+          & "$env:SSH_PATH" -T -p 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" `
             -o StrictHostKeyChecking=no `
             -o ConnectTimeout=10 `
-            -o LogLevel=ERROR `
-            $env:PROD_USER@$env:PROD_HOST "echo 'SSH connection successful'"
+            $env:PROD_USER@$env:PROD_HOST "echo 'SSH test successful'"
           
           if (-not $?) {
-              Write-Output "::error::❌ SSH connection failed"
+              Write-Output "::error::SSH connection failed"
               exit 1
           }
         env:
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
 
-      # Шаг 6: Деплой на сервер
       - name: Deploy to Production
         run: |
-          $scpPath = "$env:Windows\System32\OpenSSH\ssh.exe"
-          $source = "build/app"
-          $destination = "$env:PROD_USER@$env:PROD_HOST:/home/$env:PROD_USER/app"
-
-          Write-Output "🚀 Deploying $source to $destination"
-
-          & $scpPath -v -P 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" `
+          # Используем SCP из той же директории
+          $scpPath = Join-Path $env:SSH_DIR "scp.exe"
+          
+          & $scpPath -P 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" `
             -o StrictHostKeyChecking=no `
-            -o ConnectTimeout=30 `
-            $source $destination
-
+            build/app $env:PROD_USER@$env:PROD_HOST:"/home/$env:PROD_USER/app"
+          
           if (-not $?) {
-              Write-Output "::error::❌ Deployment failed"
+              Write-Output "::error::Deployment failed"
               exit 1
           }
-
-          Write-Output "✅ Deployment successful"
         env:
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
 
-      # Шаг 7: Запуск приложения
       - name: Start Application
         run: |
-          $sshPath = "$env:Windows\System32\OpenSSH\ssh.exe"
-          $remoteCommands = @"
-          #!/bin/bash
-          echo "=== Environment ==="
-          printenv
-          echo "=== Disk Space ==="
-          df -h
-          echo "=== Starting Application ==="
-          pgrep -f app && kill $(pgrep -f app) || echo "No running process found"
-          chmod +x ~/app
-          nohup ~/app > ~/app.log 2>&1 &
-          sleep 2
-          pgrep -f app || { echo "::error::❌ Failed to start application"; cat ~/app.log; exit 1; }
-          echo "✅ Application started (PID: $(pgrep -f app))"
-          "@
-
-          & $sshPath -p 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" `
+          & "$env:SSH_PATH" -p 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" `
             -o StrictHostKeyChecking=no `
-            $env:PROD_USER@$env:PROD_HOST "$remoteCommands"
+            $env:PROD_USER@$env:PROD_HOST `
+            "chmod +x /home/$env:PROD_USER/app && nohup /home/$env:PROD_USER/app > /home/$env:PROD_USER/app.log 2>&1 &"
         env:
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
