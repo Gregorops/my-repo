@@ -5,63 +5,166 @@ on:
 
 jobs:
   build-and-deploy:
-    runs-on: self-hosted  # Windows runner
+    runs-on: self-hosted
     defaults:
       run:
-        shell: powershell  # Используем PowerShell для лучшей обработки
+        shell: powershell
         working-directory: ${{ github.workspace }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Go
+      - name: Setup Go environment
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache: true
 
       - name: Build Go binary
         run: |
+          # Проверка исходного кода
           if (-not (Test-Path main.go)) {
-            Write-Output "❌ Файл main.go не найден!"
+            Write-Error "❌ Файл main.go не найден!"
+            Get-ChildItem -Recurse | Out-String | Write-Output
             exit 1
           }
-          $env:GOOS = "linux"
-          $env:GOARCH = "amd64"
-          go build -o build/app main.go
-          Get-ChildItem build
 
-      - name: Setup SSH
+          # Сборка приложения
+          try {
+            $env:GOOS = "linux"
+            $env:GOARCH = "amd64"
+            go build -ldflags="-s -w" -o build/app main.go
+            
+            # Проверка бинарника
+            if (-not (Test-Path build/app)) {
+              throw "Бинарник не был создан"
+            }
+            $fileSize = (Get-Item "build/app").Length
+            if ($fileSize -lt 1MB) {
+              Write-Warning "⚠️ Размер бинарника подозрительно мал: $($fileSize/1KB) KB"
+            }
+            
+            Write-Output "✅ Бинарник успешно собран"
+            Get-ChildItem build
+          } catch {
+            Write-Error "❌ Ошибка сборки: $_"
+            exit 1
+          }
+
+      - name: Setup SSH environment
         run: |
-          New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.ssh"
-          $env:SSH_PRIVATE_KEY | Out-File -FilePath "$env:USERPROFILE\.ssh\id_ed25519" -Encoding ASCII
-          Write-Output "✅ SSH key created"
-          # Fix line endings
-          (Get-Content "$env:USERPROFILE\.ssh\id_ed25519") -replace "`r`n","`n" | Set-Content "$env:USERPROFILE\.ssh\id_ed25519" -NoNewline
-          # Set permissions
-          icacls "$env:USERPROFILE\.ssh\id_ed25519" /inheritance:r /grant:r "$env:USERNAME`:R"
+          try {
+            # Проверка и создание .ssh директории
+            if (-not (Test-Path "$env:USERPROFILE\.ssh")) {
+              New-Item -ItemType Directory -Path "$env:USERPROFILE\.ssh" -Force | Out-Null
+            }
+
+            # Сохранение SSH ключа
+            $env:SSH_PRIVATE_KEY | Out-File -FilePath "$env:USERPROFILE\.ssh\id_ed25519" -Encoding ASCII -NoNewline
+            
+            # Проверка ключа
+            $keyContent = Get-Content "$env:USERPROFILE\.ssh\id_ed25519" -Raw
+            if (-not $keyContent.Contains("PRIVATE KEY")) {
+              throw "Неверный формат SSH ключа"
+            }
+
+            # Фикс переносов строк
+            ($keyContent -replace "`r`n","`n") | Set-Content "$env:USERPROFILE\.ssh\id_ed25519" -NoNewline
+            
+            # Установка прав
+            icacls "$env:USERPROFILE\.ssh\id_ed25519" /inheritance:r /grant:r "$env:USERNAME`:R"
+            
+            Write-Output "✅ SSH ключ настроен"
+          } catch {
+            Write-Error "❌ Ошибка настройки SSH: $_"
+            exit 1
+          }
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Deploy to Production
+      - name: Verify server connection
         run: |
-          Write-Output "🚀 Deploying to production..."
-          scp -P 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" -o StrictHostKeyChecking=no build/app ${env:PROD_USER}@${env:PROD_HOST}:/home/${env:PROD_USER}/app
+          try {
+            Write-Output "🔍 Проверяем подключение к серверу..."
+            $connection = Test-NetConnection -ComputerName $env:PROD_HOST -Port 5692 -InformationLevel Detailed
+            if (-not $connection.TcpTestSucceeded) {
+              throw "Не удалось подключиться к $($env:PROD_HOST):5692"
+            }
+            
+            Write-Output "✅ Сервер доступен"
+          } catch {
+            Write-Error "❌ Ошибка подключения: $_"
+            exit 1
+          }
+        env:
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+
+      - name: Deploy application
+        run: |
+          try {
+            Write-Output "🚀 Начинаем деплой приложения..."
+            
+            # Проверка бинарника перед отправкой
+            if (-not (Test-Path "build/app")) {
+              throw "Файл build/app не найден"
+            }
+
+            # Копирование с подробным логированием
+            & "$env:ProgramFiles\OpenSSH\scp.exe" -v -P 5692 `
+              -i "$env:USERPROFILE\.ssh\id_ed25519" `
+              -o StrictHostKeyChecking=no `
+              -o ConnectTimeout=30 `
+              "build/app" `
+              "$env:PROD_USER@$env:PROD_HOST:/home/$env:PROD_USER/app"
+            
+            Write-Output "✅ Приложение успешно загружено на сервер"
+          } catch {
+            Write-Error "❌ Ошибка при деплое: $_"
+            exit 1
+          }
         env:
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
 
-      - name: Start Application on Production
+      - name: Start application on server
         run: |
-          Write-Output "⚙️ Restarting application..."
-          $commands = @"
-            pgrep -f app | xargs kill -9 || true
-            chmod +x /home/${env:PROD_USER}/app
-            nohup /home/${env:PROD_USER}/app > /home/${env:PROD_USER}/app.log 2>&1 &
-            sleep 2
-            pgrep -f app && echo "✅ Application started (PID: $(pgrep -f app))" || echo "❌ Failed to start application"
-          "@
-          ssh -p 5692 -i "$env:USERPROFILE\.ssh\id_ed25519" -o StrictHostKeyChecking=no ${env:PROD_USER}@${env:PROD_HOST} "$commands"
+          try {
+            Write-Output "⚙️ Запускаем приложение на сервере..."
+            
+            $commands = @"
+              #!/bin/bash
+              echo "Текущий каталог: $(pwd)"
+              echo "Содержимое домашнего каталога:"
+              ls -lh ~/
+              
+              # Останавливаем предыдущую версию
+              pgrep -f app && kill $(pgrep -f app) || echo "Процесс не найден"
+              
+              # Даем права на выполнение
+              chmod +x /home/$env:PROD_USER/app
+              
+              # Запускаем новую версию
+              nohup /home/$env:PROD_USER/app > /home/$env:PROD_USER/app.log 2>&1 &
+              sleep 2
+              
+              # Проверяем запуск
+              pgrep -f app && echo "✅ Приложение запущено (PID: $(pgrep -f app))" || {
+                echo "❌ Не удалось запустить приложение"
+                echo "Последние строки лога:"
+                tail -n 20 /home/$env:PROD_USER/app.log
+                exit 1
+              }
+            "@
+            
+            & "$env:ProgramFiles\OpenSSH\ssh.exe" -p 5692 `
+              -i "$env:USERPROFILE\.ssh\id_ed25519" `
+              -o StrictHostKeyChecking=no `
+              $env:PROD_USER@$env:PROD_HOST "$commands"
+          } catch {
+            Write-Error "❌ Ошибка при запуске приложения: $_"
+            exit 1
+          }
         env:
           PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
