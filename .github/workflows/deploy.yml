@@ -91,7 +91,7 @@ jobs:
       # Шаг 6: Деплой на сервер
       - name: Deploy to Production
         run: |
-          $scpPath = "$env:ProgramFiles\OpenSSH\scp.exe"
+          $scpPath = "$env:Windows\System32\OpenSSH\ssh.exe"
           $source = "build/app"
           $destination = "$env:PROD_USER@$env:PROD_HOST:/home/$env:PROD_USER/app"
 
@@ -115,7 +115,7 @@ jobs:
       # Шаг 7: Запуск приложения
       - name: Start Application
         run: |
-          $sshPath = "$env:Windows\System32\OpenSSH"
+          $sshPath = "$env:Windows\System32\OpenSSH\ssh.exe"
           $remoteCommands = @"
           #!/bin/bash
           echo "=== Environment ==="
