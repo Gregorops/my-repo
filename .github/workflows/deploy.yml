@@ -34,10 +34,7 @@ jobs:
            echo "✅ Ключ записан"
            chmod 600 ~/.ssh/id_ed25519
            echo "✅ Права установлены"
-           ssh-keyscan -p 5692 -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
-           echo "✅ Хост добавлен"
-
-
+           
       - name: Deploy to Production
         run: |
           echo "🚀 Копируем Go-приложение на прод..."
