@@ -11,26 +11,36 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'  # Укажи нужную тебе версию
+
       - name: Build Go binary
         run: |
           mkdir -p build
+          if [ ! -f main.go ]; then
+            echo "Файл main.go не найден!"
+            exit 1
+          fi
           GOOS=linux GOARCH=amd64 go build -o build/goapp main.go
-          
+          ls -l build/
+
       - name: Setup SSH
         run: |
-          set -x  # Показ команд
+          set -e
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519 || echo "Ошибка записи ключа"
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p 5692 -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts || echo "Ошибка keyscan"
+          ssh-keyscan -p 5692 -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
 
- 
       - name: Deploy and Run on Production
         run: |
           scp -P 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no build/goapp ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }}:/home/${{ secrets.PROD_USER }}/goapp
-          ssh -p 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }} << 'EOF'
+
+          ssh -p 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }} "
             pkill goapp || true
             chmod +x ~/goapp
             nohup ~/goapp > goapp.log 2>&1 &
-          EOF
+          "
 
