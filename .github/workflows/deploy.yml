@@ -1,9 +1,7 @@
 name: Deploy Go App to Production
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  workflow_dispatch:  # Только по кнопке
 
 jobs:
   build-and-deploy:
@@ -15,7 +13,7 @@ jobs:
 
       - name: Build Go binary
         run: |
-          mkdir build
+          mkdir -p build
           GOOS=linux GOARCH=amd64 go build -o build/goapp main.go
 
       - name: Setup SSH
@@ -23,9 +21,9 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H ${{ secrets.PROD_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Deploy to production
+      - name: Deploy and Run on Production
         run: |
           scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no build/goapp ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }}:/home/${{ secrets.PROD_USER }}/goapp
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }} << 'EOF'
