@@ -1,20 +1,24 @@
 name: Deploy Go App to Production
 
 on:
-  workflow_dispatch:  # Запуск вручную по кнопке
+  workflow_dispatch:
 
 jobs:
   build-and-deploy:
-    runs-on: self-hosted
+    runs-on: self-hosted  # Windows runner
+    defaults:
+      run:
+        shell: bash  # Явно указываем bash для всех шагов
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'  # Укажи свою версию Go, если нужна другая
+          go-version: '1.22'
+          cache: true
 
       - name: Build Go binary
         run: |
@@ -23,29 +27,33 @@ jobs:
             echo "❌ Файл main.go не найден!"
             exit 1
           fi
-          GOOS=linux GOARCH=amd64 go build -o build/goapp main.go
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o build/goapp main.go
           ls -lh build/
 
       - name: Setup SSH
         run: |
-           set -ex  # Показывает команды и останавливает при ошибке
-           mkdir -p ~/.ssh
-           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-           echo "✅ Ключ записан"
-           chmod 600 ~/.ssh/id_ed25519
-           echo "✅ Права установлены"
-           
+          set -ex
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Для Windows можно добавить явное преобразование формата строки
+          sed -i 's/\r$//' ~/.ssh/id_ed25519
+
       - name: Deploy to Production
         run: |
           echo "🚀 Копируем Go-приложение на прод..."
-          scp -P 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no build/goapp "${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }}:/home/${{ secrets.PROD_USER }}/goapp"
+          scp -P 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
+            build/goapp ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }}:~/goapp
 
       - name: Start Application on Production
         run: |
           echo "⚙️ Перезапуск Go-приложения..."
-          ssh -p 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }} "
+          ssh -p 5692 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
+            ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }} << 'EOF'
+            #!/bin/bash
             pkill goapp || true
             chmod +x ~/goapp
             nohup ~/goapp > ~/goapp.log 2>&1 &
-            echo '✅ Приложение запущено'
-          "
+            sleep 2
+            pgrep goapp && echo "✅ Приложение запущено (PID: $(pgrep goapp))" || echo "❌ Не удалось запустить приложение"
+          EOF
